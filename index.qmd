@@ -1,0 +1,626 @@
+---
+title: "FinalSite"
+---
+
+# Title 
+
+## Disproportionality analysis on FDA-reported and CNS-related adverse events among older adults who used OTC anticholinergics during 2015-2025
+
+# Introduction
+
+Neurological diseases are conditions that impact the nervous system, including the brain, spinal cord, and nerves. In 2016, they were the top cause of disability and the second leading cause of death globally^1^. Older adults are at greater risk of developing central nervous system (CNS) issues sometimes because of reduced cholinergic activity, which results from lower acetylcholine production or fewer receptors. Additionally, increased blood-brain barrier (BBB) permeability and decreased p-glycoprotein transport, which normally prevents foreign substances from crossing the BBB, also contribute to this risk^2^. Nevertheless, modifiable factors like medication use can be controlled. In 2018 and 2019, around 14% of older adults with dementia in the US were prescribed three or more CNS-active medications^3, 4^. This is alarming, considering the potential side effects for this vulnerable population. In addition, some research studies suggest a link between long-term anticholinergic (Ach) medication use and a higher risk of dementia^5-8^, partly because some older adults who take them daily may underestimate their risk. This study may help increase public awareness that over-the-counter (OTC) anticholinergics are also sometimes overlooked or not typically reported as potentially dangerous when used chronically.
+
+The FDA Adverse Event Reporting System (FAERS) is a nationwide database that tracks drug safety post-marketing by collecting adverse event reports from manufacturers, patients, and other sources. I hypothesize that FDA-reported and CNS-related adverse events due to OTC Ach drugs increases with age and is more frequent in females; and the most common FDA-reported OTC Ach has also the strongest association with CNS-related adverse events. To test this hypothesis, I aim to perform disproportionality analysis among 5 OTC Ach drugs
+
+**Research question**
+
+What OTC ACh drug has the strongest association with CNS-related adverse events in older adults 50+ years who used at least one OTC Ach in the last decade, 2015-Nov 2025?
+
+**Exposure:** OTC Ach drugs
+
+**Outcome:** FDA-reported and CNS-related adverse events
+
+# Methods
+
+I utilized the FAERS database to search for CNS-related adverse event entries, and I narrowed it for adults 50+ years old. According to the American Geriatrics Society 2023 Beers Criteria, older adults should reduce OTC anticholinergics^9^ such as diphenhydramine (Benadryl, tylenol PM, zzzQuil), doxylamine (Unisom, nyquil, nighttime), chlorpheniramine (some cold meds), meclizine (Bonine, antivert), and dimenhydrinate (Dramamine) as these have strong anticholinergic activity. Thus, I limited my search to these 5 OTC anticholinergic agents.
+
+## Dataset prep
+
+```{r}
+#| message: false
+#| warning: false
+#| include: false
+library(readxl)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(leaflet)
+library(rnaturalearth)
+library(sf)
+library(htmltools)
+library(lubridate)
+library(stringr)
+library(ggplot2)
+library(plotly)
+library(treemapify)
+library(patchwork)
+library(knitr)
+library(kableExtra)
+```
+
+```{r}
+#| message: false
+#| warning: false
+
+
+## 1. download data on the 5 OTC anticholinergic drugs trough FAERS 
+
+## 2. Define CNS-related adverse events 
+# terms in "Reactions" variable that indicate possible CNS-related adverse events.
+cns_events <- c(
+  # cognitive / memory / attention
+  "memory impairment", "amnesia", "brain fog", "dementia",
+  "cognitive", "disturbance in attention",
+  
+  # seizures / epilepsy
+  "seizure", "convulsion", "epilep",
+  
+  # pain
+  "headache", "migraine",
+  
+  # consciousness / dizziness / behavior
+  "coma", "loss of consciousness", "syncope", "presyncope",
+  "dizziness", "vertigo", "Mental", "Behavior",
+  
+  # brain / stroke / encephalopathy
+  "brain", "cerebral", "intracranial", "stroke",
+  "encephal", "cerebrovascular",
+  
+  # neurologic / CNS-related / movement
+  "tremor", "parkinson", "extrapyramidal", "myoclon",
+  "dystonia", "neuropath", "neurologic", "narcolepsy", "nervous", "nerve",
+  
+  # senses
+  "taste", "visual", "speech", "sensory",
+  
+  # psychiatric / mood / psychosis / sleep
+  "delirium", "hallucination", "psychosis", "psychotic",
+  "schizophrenia", "depression", "depressive",
+  "anxiety", "insomnia", "somnolence", "sedation",
+  "confusional", "agitation", "irritability",
+  "suicidal", "suicide", "panic", "mania",
+  "bipolar", "catatonia", "hypomania"
+)
+
+## 3. Data cleaning 
+df_clean <- read_excel("~/Downloads/OTC Ach.xlsx") %>%
+  drop_na(`Case ID`, Reactions, `Suspect Product Active Ingredients`) %>%   
+  distinct(`Case ID`, .keep_all = TRUE) %>%                                 
+  mutate(
+    age = as.numeric(str_extract(`Patient Age`, "^[0-9]+")),                
+    `OTC drugs` = if_else(
+      str_detect(
+        `Suspect Product Active Ingredients`,
+        regex("diphenhydramine|doxylamine|chlorpheniramine|meclizine|dimenhydrinate",
+              ignore_case = TRUE)),"Yes", "No"),
+    cns_events = if_else(
+      str_detect(
+        Reactions,
+        regex(paste(cns_events, collapse = "|"), ignore_case = TRUE)),"Yes", "No")) %>%
+  filter(
+    age >= 50,
+    `Country where Event occurred` != "Not Specified") %>%
+  select(
+    `Case ID`,
+    `Suspect Product Active Ingredients`, 
+    Reactions,
+    Outcomes,
+    Sex,
+    `Patient Age`,
+    `Country where Event occurred`,
+    `Latest FDA Received Date`,
+    `OTC drugs`,
+    cns_events)
+
+#How many unique reaction (adverse events) are related to these OTC Ach drugs?
+n_unique_reaction_terms <- df_clean %>%
+  separate_rows(Reactions, sep = ";") %>%     
+  mutate(Reactions = str_trim(Reactions)) %>% 
+  filter(Reactions != "") %>%                 
+  distinct(Reactions) %>%                     
+  summarise(n_terms = n()) %>%                
+  pull(n_terms)                               
+
+n_unique_reaction_terms
+
+```
+
+In this transformed dataset, there are 4,543 observations of OTC drug-related adverse events that were reported to the FDA; out of which 1,522 were CNS-related in adults 50+ years.
+
+## Exploratory Analysis
+
+```{r}
+#| message: false
+#| warning: false
+
+## 1. Aggregate OTC events by country
+
+country_counts <- df_clean %>%
+  group_by(country = `Country where Event occurred`) %>%
+  summarise(
+    otc_yes = sum(`OTC drugs` == "Yes", na.rm = TRUE),
+    total   = n(),
+    .groups = "drop"
+  )
+
+## 2. World polygons + join your data 
+
+world <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf")
+
+world_data <- world %>%
+  left_join(country_counts, by = c("iso_a2" = "country")) %>%
+  mutate(
+    otc_yes = dplyr::coalesce(otc_yes, 0L),
+    total   = dplyr::coalesce(total,   0L)
+  )
+
+## 3. Keep countries that actually have data 
+
+world_data_with_data <- world_data %>%
+  filter(total > 0)
+
+# bounding box of only those countries
+bbox <- sf::st_bbox(world_data_with_data)
+x_min <- as.numeric(bbox["xmin"])
+y_min <- as.numeric(bbox["ymin"])
+x_max <- as.numeric(bbox["xmax"])
+y_max <- as.numeric(bbox["ymax"])
+
+## 4.leaflet map
+
+pal <- colorNumeric(
+  palette = "YlOrRd",
+  domain  = world_data_with_data$otc_yes,
+  na.color = "transparent"
+)
+
+leaflet(world_data_with_data,
+        options = leafletOptions(worldCopyJump = FALSE)) %>%
+  addTiles(options = tileOptions(noWrap = TRUE)) %>%
+  addPolygons(
+    fillColor   = ~pal(otc_yes),
+    weight      = 1,
+    opacity     = 1,
+    color       = "white",
+    fillOpacity = 0.7,
+    highlightOptions = highlightOptions(
+      weight = 2,
+      color = "#666",
+      fillOpacity = 0.7,
+      bringToFront = TRUE
+    ),
+    label = ~lapply(paste0(
+      "<strong>", iso_a2, " (", continent, ")</strong><br/>",
+      "OTC Yes: ", otc_yes, "<br/>",
+      "Total events: ", total
+    ), HTML)
+  ) %>%
+  fitBounds(x_min, y_min, x_max, y_max) %>%
+  addLegend(
+    pal     = pal,
+    values  = ~otc_yes,
+    opacity = 0.7,
+    title   = "OTC-drug events",
+    position = "bottomright"
+  )
+
+```
+
+Although FDA-reported OTC drug events came from any country of the world, the majority of cases were reported from the U.S. followed by Canada.
+
+```{r}
+#| message: false
+#| warning: false
+
+## 1. Aggregate CNS cases by year and count each OTC drugs 
+
+cns_year <- df_clean %>%
+  mutate(
+    latest_date = as.Date(`Latest FDA Received Date`, format = "%d-%b-%Y"),
+    year = year(latest_date)) %>%
+  filter(
+    !is.na(latest_date),
+    year >= 2015, year <= 2025,
+    cns_events == "Yes") %>%
+  mutate(
+    Diphenhydramine  = str_detect(`Suspect Product Active Ingredients`,
+                                  regex("diphenhydramine", ignore_case = TRUE)),
+    Doxylamine       = str_detect(`Suspect Product Active Ingredients`,
+                                  regex("doxylamine", ignore_case = TRUE)),
+    Chlorpheniramine = str_detect(`Suspect Product Active Ingredients`,
+                                  regex("chlorpheniramine", ignore_case = TRUE)),
+    Meclizine        = str_detect(`Suspect Product Active Ingredients`,
+                                  regex("meclizine", ignore_case = TRUE)),
+    Dimenhydrinate   = str_detect(`Suspect Product Active Ingredients`,
+                                  regex("dimenhydrinate", ignore_case = TRUE))) %>%
+  group_by(year) %>%
+  summarise(
+    Diphenhydramine  = sum(Diphenhydramine,  na.rm = TRUE),
+    Doxylamine       = sum(Doxylamine,       na.rm = TRUE),
+    Chlorpheniramine = sum(Chlorpheniramine, na.rm = TRUE),
+    Meclizine        = sum(Meclizine,        na.rm = TRUE),
+    Dimenhydrinate   = sum(Dimenhydrinate,   na.rm = TRUE),
+    .groups = "drop") %>%
+  complete(
+    year = 2015:2025,
+    fill = list(
+      Diphenhydramine  = 0L,
+      Doxylamine       = 0L,
+      Chlorpheniramine = 0L,
+      Meclizine        = 0L,
+      Dimenhydrinate   = 0L)) %>%
+  mutate(
+    total_cases = Diphenhydramine + Doxylamine +
+                  Chlorpheniramine + Meclizine + Dimenhydrinate,
+    hover_text = paste0(
+      "Year: ", year, "<br>",
+      "Diphenhydramine: ", Diphenhydramine, "<br>",
+      "Doxylamine: ", Doxylamine, "<br>",
+      "Chlorpheniramine: ", Chlorpheniramine, "<br>",
+      "Meclizine: ", Meclizine, "<br>",
+      "Dimenhydrinate: ", Dimenhydrinate))
+
+## 2. ggplot 
+
+p <- ggplot(cns_year, aes(x = year, y = total_cases)) +
+  geom_line() +
+  geom_point(aes(text = hover_text), size = 2) +
+  scale_x_continuous(breaks = 2015:2025) +
+  labs(
+    x = "Year",
+    y = "Number of CNS-related cases",
+    title = "CNS-related cases due to OTC Ach drugs from 2015 to 2025") +
+  theme_minimal()
+
+## 3. Interactive plotly
+
+ggplotly(p, tooltip = "text") %>%
+  layout(showlegend = FALSE)
+
+
+```
+
+According to this data, 2025 is the year with most CNS-related events associated with OTC Ach drugs followed by 2020. Specifically, diphenhydramine is the OTC Ach drug with most CNS-related events compared to others regardless of year.
+
+```{r}
+#| message: false
+#| warning: false
+
+# Assign a specific color to OTC Ach drugs
+drug_cols <- c(
+  "Diphenhydramine"  = "#F4A259",
+  "Doxylamine"       = "#D1495B",
+  "Chlorpheniramine" = "#4E937A",
+  "Meclizine"        = "#5B5F97",
+  "Dimenhydrinate"   = "#8C5E58")
+
+## 1. CNS cases by age group and OTC Ach drug 
+age_cns_otc <- df_clean %>%
+  filter(cns_events == "Yes") %>%
+  mutate(
+    age_num = as.numeric(str_extract(`Patient Age`, "^[0-9]+")),
+    age_group = case_when(
+      age_num >= 50 & age_num < 60 ~ "50-59",
+      age_num >= 60 & age_num < 70 ~ "60-69",
+      age_num >= 70 & age_num < 80 ~ "70-79",
+      age_num >= 80                ~ "80+",
+      TRUE ~ NA_character_)) %>%
+  filter(!is.na(age_group)) %>%
+  mutate(
+    Diphenhydramine  = str_detect(`Suspect Product Active Ingredients`,
+                                  regex("diphenhydramine", ignore_case = TRUE)),
+    Doxylamine       = str_detect(`Suspect Product Active Ingredients`,
+                                  regex("doxylamine", ignore_case = TRUE)),
+    Chlorpheniramine = str_detect(`Suspect Product Active Ingredients`,
+                                  regex("chlorpheniramine", ignore_case = TRUE)),
+    Meclizine        = str_detect(`Suspect Product Active Ingredients`,
+                                  regex("meclizine", ignore_case = TRUE)),
+    Dimenhydrinate   = str_detect(`Suspect Product Active Ingredients`,
+                                  regex("dimenhydrinate", ignore_case = TRUE))) %>%
+  pivot_longer(
+    cols = c(Diphenhydramine, Doxylamine, Chlorpheniramine,
+             Meclizine, Dimenhydrinate),
+    names_to  = "OTC_Ach_drug",
+    values_to = "present") %>%
+  filter(present) %>%
+  count(age_group, OTC_Ach_drug, name = "n_cases") %>%
+  mutate(
+    age_group    = factor(age_group, levels = c("50-59","60-69","70-79","80+")),
+    OTC_Ach_drug = factor(OTC_Ach_drug,
+                           levels = c("Diphenhydramine", "Doxylamine",
+                                      "Chlorpheniramine", "Meclizine",
+                                      "Dimenhydrinate")))
+## 2. ggplot, split by OTC Ach drugs
+p <- ggplot(
+  age_cns_otc,
+  aes(
+    x    = n_cases,
+    y    = age_group,
+    fill = OTC_Ach_drug,
+    text = paste0(
+      "Age: ", age_group, "<br>",
+      "OTC Ach drug: ", OTC_Ach_drug, "<br>",
+      "Cases: ", n_cases))) +
+  geom_col(position = "stack") +   
+  scale_fill_manual(values = drug_cols) +
+  labs(
+    x = "Number of CNS-related cases",
+    y = "Age group",
+    title = "CNS-related cases by age and OTC Ach drugs from 2015 to 2025"
+  ) +
+  theme_minimal() +
+  guides(fill = "none")            
+
+## 3. Interactive ggplotly
+ggplotly(p, tooltip = "text") %>%
+  layout(showlegend = FALSE)
+
+```
+
+Age groups 50-59 and 60-69 are the ones with most CNS-related events due to OTC Ach drugs. Moreover, when the number of CNS-related events are stratified by individual OTC Ach drugs, the distribution varies based on age group.
+
+```{r}
+#| message: false
+#| warning: false
+
+
+## 1. Aggregate CNS cases by age group and sex (Female/Male)
+age_sex_cns <- df_clean %>%
+  filter(
+    cns_events == "Yes",
+    Sex %in% c("Female", "Male")) %>%
+  mutate(
+    age_num = as.numeric(str_extract(`Patient Age`, "^[0-9]+")),
+    age_group = case_when(
+      age_num >= 50 & age_num < 60 ~ "50-59",
+      age_num >= 60 & age_num < 70 ~ "60-69",
+      age_num >= 70 & age_num < 80 ~ "70-79",
+      age_num >= 80                ~ "80+",
+      TRUE ~ NA_character_)) %>%
+  filter(!is.na(age_group)) %>%
+  count(age_group, Sex, name = "n_cases") %>%
+  mutate(
+    age_group = factor(age_group, levels = c("50-59", "60-69", "70-79", "80+")),
+    Sex       = factor(Sex, levels = c("Female", "Male")))
+
+## 2. ggplot, split by sex
+p <- ggplot(
+  age_sex_cns,
+  aes(
+    x    = age_group,
+    y    = n_cases,
+    fill = Sex,
+    text = paste0(
+      "Age group: ", age_group, "<br>",
+      "Sex: ", Sex, "<br>",
+      "Cases: ", n_cases))) +
+  geom_col(position = "stack") +   
+  labs(
+    x = "Age group",
+    y = "Number of CNS-related cases",
+    title = "CNS-related cases by age group and sex") +
+  theme_minimal() +
+  guides(fill = "none")           
+
+## 3. interactive ggplotly
+ggplotly(p, tooltip = "text") %>%
+  layout(showlegend = FALSE)
+
+
+```
+
+Females reported CNS-related events due to OTC Ach drug more frequently compared to males regardless of age group.
+
+```{r}
+#| message: false
+#| warning: false
+
+## 1. Aggregate CNS cases by age group and recorded outcome severity
+age_outcomes_cns <- df_clean %>%
+  filter(cns_events == "Yes") %>%
+  mutate(
+    age_num = as.numeric(str_extract(`Patient Age`, "^[0-9]+")),
+    age_group = case_when(
+      age_num >= 50 & age_num < 60 ~ "50-59",
+      age_num >= 60 & age_num < 70 ~ "60-69",
+      age_num >= 70 & age_num < 80 ~ "70-79",
+      age_num >= 80                ~ "80+",
+      TRUE ~ NA_character_)) %>%
+  filter(!is.na(age_group)) %>%
+  mutate(
+    Outcome_group = case_when(
+      str_detect(Outcomes, regex("death|died|de", ignore_case = TRUE)) ~ "Died",
+      str_detect(Outcomes, regex("Disabled",       ignore_case = TRUE)) ~ "Disabled",
+      str_detect(Outcomes, regex("hospital",      ignore_case = TRUE)) ~ "Hospitalized",
+      str_detect(Outcomes, regex("life.?threat|lt", ignore_case = TRUE)) ~ "Life-treatening",
+      TRUE ~ "non-serious")) %>%
+  count(age_group, Outcome_group, name = "n_cases") %>%
+  mutate(
+    age_group    = factor(age_group, levels = c("50-59", "60-69", "70-79", "80+")),
+    Outcome_group = factor(
+      Outcome_group,
+      levels = c("Died", "Disabled", "Hospitalized", "Life-treatening", "non-serious")))
+
+## 2. ggplot, split by Outcome_group 
+p <- ggplot(
+  age_outcomes_cns,
+  aes(
+    x    = age_group,
+    y    = n_cases,
+    fill = Outcome_group,
+    text = paste0(
+      "Age group: ", age_group, "<br>",
+      "Outcome: ", Outcome_group, "<br>",
+      "Cases: ", n_cases))) +
+  geom_col(position = "stack") +
+  labs(
+    x = "Age group",
+    y = "Number of CNS-related cases",
+    title = "CNS-related cases by age group and outcome (2015-2025)") +
+  theme_minimal() +
+  guides(fill = "none") 
+
+## 3. interactive ggplotly
+ggplotly(p, tooltip = "text") %>%
+  layout(showlegend = FALSE)
+
+
+```
+
+In this data, the age group with the greatest reported death cases was 50-59 followed by 60-69, and same trend was seen for non-serious cases.
+
+## Results
+
+```{r}
+#| message: false
+#| warning: false
+
+## 1. Disproportionality analysis (Reporting Odds Ratio). This is the best type of analysis for spontaneous reports that lack true target population denominator.  
+
+otc_ings <- c("Diphenhydramine",
+              "Doxylamine",
+              "Chlorpheniramine",
+              "Meclizine",
+              "Dimenhydrinate")
+
+disprop_results <- lapply(otc_ings, function(ing) {
+  exposed <- str_detect(df_clean$`Suspect Product Active Ingredients`,
+                        regex(ing, ignore_case = TRUE))
+  event   <- df_clean$cns_events == "Yes"
+  
+  a <- sum(exposed & event,   na.rm = TRUE)  # drug + CNS event
+  b <- sum(exposed & !event,  na.rm = TRUE)  # drug + non-CNS event
+  c <- sum(!exposed & event, na.rm = TRUE)  # no drug + CNS event
+  d <- sum(!exposed & !event, na.rm = TRUE)  # no drug + non-CNS event
+  
+  # continuity correction if any cell is zero
+  if (any(c(a, b, c, d) == 0)) {
+    a <- a + 0.5; b <- b + 0.5; c <- c + 0.5; d <- d + 0.5
+  }
+  
+  ROR <- (a * d) / (b * c)
+  se_log_ROR <- sqrt(1/a + 1/b + 1/c + 1/d)
+  lower <- exp(log(ROR) - 1.96 * se_log_ROR)
+  upper <- exp(log(ROR) + 1.96 * se_log_ROR)
+  
+  tibble(
+    `OTC Ach drug` = ing,
+    a = a, b = b, c = c, d = d,
+    total_exposed = a + b,
+    ROR           = ROR,
+    lower_CI      = lower,
+    upper_CI      = upper
+  )}) %>%
+  bind_rows()
+
+## 2. formatted kable table
+disprop_results %>%
+  mutate(
+    ROR      = round(ROR, 2),
+    lower_CI = round(lower_CI, 2),
+    upper_CI = round(upper_CI, 2)) %>%
+  kable(
+    format   = "html",   
+    caption  = "Disproportionality analysis on CNS-related events by OTC Ach drugs",
+    col.names = c(
+      "OTC Ach drug",
+      "a: Drug + CNS",
+      "b: Drug + non-CNS",
+      "c: No drug + CNS",
+      "d: No drug + non-CNS",
+      "Total exposed",
+      "ROR",
+      "Lower 95% CI",
+      "Upper 95% CI"),
+    align = c("l", rep("r", 8))) %>%
+  kable_styling(
+    full_width        = FALSE,
+    bootstrap_options = c("striped", "hover", "condensed"))
+
+
+# designated color per OTC Ach drugs as before
+drug_cols <- c(
+  "Diphenhydramine"  = "#F4A259",  
+  "Doxylamine"       = "#D1495B",  
+  "Chlorpheniramine" = "#4E937A",  
+  "Meclizine"        = "#5B5F97",  
+  "Dimenhydrinate"   = "#8C5E58")   
+
+## 3. Treemap (size = exposed count, solid color per drug) 
+
+p_treemap <- ggplot(disprop_results,
+                    aes(area  = total_exposed,
+                        fill  = `OTC Ach drug`,
+                        label = paste0(`OTC Ach drug`, "\n(n=", total_exposed, ")"))) +
+  geom_treemap() +
+  geom_treemap_text(
+    colour = "black",   
+    place  = "centre",
+    reflow = TRUE,
+    size   = 9  
+  ) +
+  scale_fill_manual(values = drug_cols) +
+  labs(
+    fill  = NULL,
+    title = "Disproportionality analysis on CNS-related events by OTC anticholinergics"
+  ) +
+  theme_minimal()
+
+
+## 4. Forest-style ROR plot
+
+p_forest <- ggplot(disprop_results,
+                   aes(x     = reorder(`OTC Ach drug`, ROR),
+                       y     = ROR,
+                       ymin  = lower_CI,
+                       ymax  = upper_CI,
+                       color = `OTC Ach drug`)) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_pointrange() +
+  coord_flip() +
+  scale_y_log10() +
+  scale_color_manual(values = drug_cols) +
+  guides(color = "none") +
+  labs(
+    x = "",
+    y = "Reporting odds ratio") +
+  theme_minimal()
+
+## 5. Combine treemap and forest plots
+
+(p_treemap | p_forest) +
+  plot_layout(widths = c(1.5, 1.2))
+
+```
+
+Dimenhydrinate and Meclizine stand out as OTC Ach drugs that were reported more frequently than expected for CNS-related events compared to non-CNS-related event and other OTC Ach drugs. whereas diphenhydramine and especially chlorpheniramine showed fewer CNS-related events than expected.
+
+# Conclusions
+
+In this dataset of older adults 50+ years with OTC anticholinergic drug exposure, dimenhydrinate showed the strongest disproportionality signal for defined CNS-related events (ROR\~2.05), and therefore strongly associated with CNS-related events relative to other OTC Ach drugs tested. In contrast, diphenhydramine, that was the most commonly reported OTC Ach drug associated with CNS-events, had a weak disproportionality signal since it was also very common for other non CNS-related events.
+
+## Limitations
+
+In this study I only reported disproportionality analysis of 5 commonly used OTC anticholinergic drugs related to previously defined CNS-related adverse events; and thus, did not infer causality given the nature of the data. This analysis can only state: "CNS-related adverse events are **reported** more often with any given OTC Ach drug than in the background of other reports". Biases in spontaneous FDA reporting data include under-reporting, confounding by indication (including dose and duration), and co-medication to mention a few. However, analysis of spontaneous reports such as FAERS can provide signal prioritization for generating hypothesis for future studies.
+
+# References
+
+1.  Dumurgier J, Tzourio C. Epidemiology of neurological diseases in older adults. *Rev Neurol (Paris).* Nov 2020;176(9):642-648.
+2.  Gray SL, Hanlon JT. Anticholinergic medication use and dementia: latest evidence and clinical implications. *Ther Adv Drug Saf.* Oct 2016;7(5):217-224.
+3.  Maust DT, Strominger J, Kim HM, et al. Prevalence of Central Nervous System-Active Polypharmacy Among Older Adults With Dementia in the US. *Jama.* Mar 9 2021;325(10):952-961.
+4.  Vordenberg SE, Davis RC, Strominger J, et al. Clinician contributions to central nervous system-active polypharmacy among older adults with dementia in the United States. *Journal of the American Geriatrics Society.* 2025;73(2):422-430.
+5.  Risacher SL, McDonald BC, Tallman EF, et al. Association Between Anticholinergic Medication Use and Cognition, Brain Metabolism, and Brain Atrophy in Cognitively Normal Older Adults. *JAMA Neurology.* 2016;73(6):721-732.
+6.  Coupland CAC, Hill T, Dening T, Morriss R, Moore M, Hippisley-Cox J. Anticholinergic Drug Exposure and the Risk of Dementia: A Nested Case-Control Study. *JAMA Internal Medicine.* 2019;179(8):1084-1093.
+7.  Gray SL, Anderson ML, Dublin S, et al. Cumulative Use of Strong Anticholinergics and Incident Dementia: A Prospective Cohort Study. *JAMA Internal Medicine.* 2015;175(3):401-407.
+8.  Dmochowski RR, Thai S, Iglay K, et al. Increased risk of incident dementia following use of anticholinergic agents: A systematic literature review and meta-analysis. *Neurourol Urodyn.* Jan 2021;40(1):28-37.
+9.  Panel BtAGSBCUE. American Geriatrics Society 2023 updated AGS Beers Criteria® for potentially inappropriate medication use in older adults. *Journal of the American Geriatrics Society.* 2023;71(7):2052-2081.
